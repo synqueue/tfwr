@@ -13,7 +13,7 @@ using UnityEngine;
 
 namespace TFWRMCPBridge
 {
-    [BepInPlugin("com.synqueue.tfwr.mcpbridge", "TFWR MCP Bridge", "1.0.0")]
+    [BepInPlugin("com.iris.tfwr.mcpbridge", "TFWR MCP Bridge", "1.0.0")]
     public class Plugin : BaseUnityPlugin
     {
         internal static BepInEx.Logging.ManualLogSource Log;
@@ -34,7 +34,7 @@ namespace TFWRMCPBridge
         {
             Log = base.Logger;
 
-            new Harmony("com.synqueue.tfwr.mcpbridge").PatchAll();
+            new Harmony("com.iris.tfwr.mcpbridge").PatchAll();
 
             _listener = new HttpListener();
             _listener.Prefixes.Add(PREFIX);
@@ -87,7 +87,7 @@ namespace TFWRMCPBridge
                     body = sr.ReadToEnd();
 
             string json;
-            try   { json = Route(req.HttpMethod, req.Url.AbsolutePath.TrimEnd('/'), body); }
+            try   { json = Route(req.HttpMethod, req.Url.AbsolutePath.TrimEnd('/'), body, req.Url.Query ?? ""); }
             catch (Exception ex) { json = JsonError(ex.Message); }
 
             byte[] bytes = Encoding.UTF8.GetBytes(json);
@@ -98,19 +98,22 @@ namespace TFWRMCPBridge
             resp.Close();
         }
 
-        private string Route(string method, string path, string body)
+        private string Route(string method, string path, string body, string query = "")
         {
-            if (method == "GET"    && path == "/api/status")  return OnMainThread(Status);
-            if (method == "GET"    && path == "/api/output")  return OnMainThread(Output);
-            if (method == "DELETE" && path == "/api/output")  return OnMainThread(ClearOutput);
-            if (method == "GET"    && path == "/api/state")   return OnMainThread(State);
-            if (method == "GET"    && path == "/api/scripts") return OnMainThread(Scripts);
-            if (method == "POST"   && path == "/api/run")     return OnMainThread(() => Run(body));
-            if (method == "POST"   && path == "/api/stop")    return OnMainThread(Stop);
-            if (method == "POST"   && path == "/api/step")    return OnMainThread(Step);
-            if (method == "GET"    && path == "/api/grid")    return OnMainThread(Grid);
-            if (method == "GET"    && path == "/api/shop")    return OnMainThread(Shop);
-            if (method == "POST"   && path == "/api/buy")     return OnMainThread(() => Buy(body));
+            if (method == "GET"    && path == "/api/status")      return OnMainThread(Status);
+            if (method == "GET"    && path == "/api/output")      return OnMainThread(Output);
+            if (method == "DELETE" && path == "/api/output")      return OnMainThread(ClearOutput);
+            if (method == "GET"    && path == "/api/state")       return OnMainThread(State);
+            if (method == "GET"    && path == "/api/scripts")     return OnMainThread(Scripts);
+            if (method == "POST"   && path == "/api/run")         return OnMainThread(() => Run(body));
+            if (method == "POST"   && path == "/api/stop")        return OnMainThread(Stop);
+            if (method == "POST"   && path == "/api/step")        return OnMainThread(Step);
+            if (method == "GET"    && path == "/api/grid")        return OnMainThread(Grid);
+            if (method == "GET"    && path == "/api/shop")        return OnMainThread(Shop);
+            if (method == "POST"   && path == "/api/buy")         return OnMainThread(() => Buy(body));
+            if (method == "GET"    && path == "/api/docs")        return OnMainThread(GetDocs);
+            if (method == "POST"   && path == "/api/docs/close")  return OnMainThread(() => CloseDocsWindow(body));
+            if (method == "GET"    && path == "/api/docs/fetch")  return OnMainThread(() => FetchDoc(query));
             return JsonError($"Unknown route: {method} {path}");
         }
 
@@ -163,7 +166,7 @@ namespace TFWRMCPBridge
                 $"{{\"isExecuting\":{B(sim.IsExecuting())}," +
                 $"\"isSimulating\":{B(sim.IsSimulating())}," +
                 $"\"worldSize\":{wsz.x}," +
-                $"\"timeSec\":{time.Seconds:F3}}}";
+                $"\"timeSec\":{time.Seconds.ToString("F3", CultureInfo.InvariantCulture)}}}";
         }
 
         private string Output()
@@ -217,7 +220,7 @@ namespace TFWRMCPBridge
                 $"{{\"unlocks\":{unlocksSb}," +
                 $"\"items\":{itemsSb}," +
                 $"\"worldSize\":{wsz.x}," +
-                $"\"timeSec\":{time.Seconds:F3}," +
+                $"\"timeSec\":{time.Seconds.ToString("F3", CultureInfo.InvariantCulture)}," +
                 $"\"isExecuting\":{B(sim.IsExecuting())}," +
                 $"\"isSimulating\":{B(sim.IsSimulating())}}}";
         }
@@ -379,7 +382,7 @@ namespace TFWRMCPBridge
                 var farm = simulation?.farm;
                 if (farm == null) return JsonError("Farm not ready");
 
-                var sb    = new StringBuilder("[");
+                var sb = new StringBuilder("[");
                 bool first = true;
 
                 foreach (var unlockSO in ResourceManager.GetAllUnlocks())
@@ -393,11 +396,11 @@ namespace TFWRMCPBridge
                     if (!string.IsNullOrEmpty(unlockSO.parentUnlock) && !farm.IsUnlocked(unlockSO.parentUnlock))
                         continue;
 
-                    var cost      = farm.GetUnlockCost(unlockSO);
+                    var cost = farm.GetUnlockCost(unlockSO);
                     bool canAfford = cost == null || cost.IsEmpty() || farm.Items.Contains(cost);
 
                     // Serialize cost items
-                    var costSb    = new StringBuilder("{");
+                    var costSb = new StringBuilder("{");
                     bool firstCost = true;
                     if (cost != null && cost.items != null)
                     {
@@ -458,6 +461,114 @@ namespace TFWRMCPBridge
                 return JsonError(
                     $"Cannot purchase '{unlockName}': already at max level, " +
                     "parent unlock not met, insufficient items, or simulation running.");
+        }
+
+        /// <summary>
+        /// GET /api/docs — list all open DocsWindow instances with their content.
+        /// </summary>
+        private string GetDocs()
+        {
+            var sim = MainSim.Inst;
+            if (sim == null) return JsonError("MainSim not ready");
+
+            var sb    = new StringBuilder("[");
+            bool first = true;
+
+            foreach (var kv in sim.workspace.openWindows)
+            {
+                if (!kv.Value.TryGetComponent<DocsWindow>(out var dw)) continue;
+
+                if (!first) sb.Append(',');
+                sb.Append('{');
+                sb.Append("\"window\":").Append(Q(kv.Key));
+                sb.Append(",\"doc\":").Append(Q(dw.openDoc ?? ""));
+                sb.Append(",\"content\":").Append(Q(dw.fullOpenDoc ?? ""));
+                sb.Append('}');
+                first = false;
+            }
+
+            sb.Append(']');
+            return $"{{\"docs\":{sb}}}";
+        }
+
+        /// <summary>
+        /// POST /api/docs/close  body: {"window": "docs0"}
+        /// Closes a DocsWindow by its window name.
+        /// </summary>
+        private string CloseDocsWindow(string body)
+        {
+            var sim = MainSim.Inst;
+            if (sim == null) return JsonError("MainSim not ready");
+
+            var m = Regex.Match(body, @"""window""\s*:\s*""([^""]+)""");
+            if (!m.Success) return JsonError("Missing 'window' field in body");
+            string windowName = m.Groups[1].Value;
+
+            if (!sim.workspace.openWindows.TryGetValue(windowName, out var window))
+                return JsonError($"Window '{windowName}' not found");
+
+            if (!window.TryGetComponent<DocsWindow>(out _))
+                return JsonError($"Window '{windowName}' is not a docs window");
+
+            window.Close();
+            return JsonOk($"Closed docs window '{windowName}'");
+        }
+
+        /// <summary>
+        /// GET /api/docs/fetch?path=docs/home.md
+        /// Returns the text content of any game doc without opening a UI window.
+        /// Replicates the DocsWindow.LoadDoc() text-building logic.
+        /// </summary>
+        private string FetchDoc(string query)
+        {
+            var m = Regex.Match(query, @"[?&]path=([^&]*)");
+            if (!m.Success || string.IsNullOrEmpty(m.Groups[1].Value))
+                return JsonError("Missing 'path' query parameter");
+
+            string docPath = Uri.UnescapeDataString(m.Groups[1].Value);
+
+            var sb = new StringBuilder();
+            try
+            {
+                if (docPath.StartsWith("functions/"))
+                {
+                    string key = docPath.Substring("functions/".Length);
+                    sb.Append(Localizer.Localize("code_tooltip_" + key) ?? "");
+                }
+                else if (docPath.StartsWith("unlocks/"))
+                {
+                    string unlockName = docPath.Substring("unlocks/".Length);
+                    var info = TooltipUtils.UnlockTooltip(unlockName);
+                    if (info == null) return JsonError($"Unlock tooltip not found: '{unlockName}'");
+                    sb.Append(info.text ?? "");
+                }
+                else if (docPath.StartsWith("items/"))
+                {
+                    string itemName = docPath.Substring("items/".Length);
+                    var info = TooltipUtils.ItemTooltip(itemName);
+                    if (info == null) return JsonError($"Item tooltip not found: '{itemName}'");
+                    sb.Append(info.text ?? "");
+                }
+                else if (docPath.StartsWith("objects/"))
+                {
+                    string objName = docPath.Substring("objects/".Length);
+                    var info = TooltipUtils.FarmObjectTooltip(objName);
+                    if (info == null) return JsonError($"Object tooltip not found: '{objName}'");
+                    sb.Append(info.text ?? "");
+                }
+                else
+                {
+                    string text = Localizer.LoadDoc(docPath);
+                    if (text == null) return JsonError($"Doc not found: '{docPath}'");
+                    sb.Append(text);
+                }
+            }
+            catch (Exception ex)
+            {
+                return JsonError($"Failed to fetch doc '{docPath}': {ex.Message}");
+            }
+
+            return $"{{\"path\":{Q(docPath)},\"content\":{Q(sb.ToString())}}}";
         }
 
         // ── Helpers ──────────────────────────────────────────────────────────

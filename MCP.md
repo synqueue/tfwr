@@ -464,6 +464,167 @@ Internally it:
 
 ---
 
+## Live tools — docs
+
+These tools interact with the game's DocsWindow system (requires MCPBridge mod).
+
+---
+
+### `live_get_open_docs()`
+Lists all DocsWindows currently open in the game UI.
+
+**Returns:**
+```json
+{
+  "docs": [
+    {
+      "window":  "docs0",
+      "doc":     "unlocks/loops",
+      "content": "# loops\n\nUnlocks **while** loops...\n"
+    }
+  ]
+}
+```
+- `window` — pass to `live_close_docs_window()`.
+- `doc` — the doc path loaded in that window (same format as `live_fetch_doc()`).
+- `content` — full rendered markdown text.
+
+---
+
+### `live_close_docs_window(window_name)`
+Closes a DocsWindow by its window name.
+
+**Args:**
+- `window_name` — from `live_get_open_docs()`, e.g. `"docs0"`.
+
+**Returns:** `{"ok": true/false, "message"/"error": str}`
+
+---
+
+### `live_fetch_doc(doc_path)`
+Fetches the text content of any game doc without opening a UI window.
+
+**Supported path formats:**
+| Prefix | Example | Source |
+|--------|---------|--------|
+| *(none / `docs/`)* | `"docs/home.md"` | Markdown file bundled with the game |
+| `unlocks/` | `"unlocks/loops"` | Unlock tooltip text |
+| `functions/` | `"functions/harvest"` | Function reference tooltip |
+| `items/` | `"items/Hay"` | Item tooltip |
+| `objects/` | `"objects/Wheat"` | Farm object tooltip |
+
+**Args:**
+- `doc_path` — doc path in any of the formats above.
+
+**Returns:** `{"path": str, "content": str}`
+
+---
+
+## Persistent docs — scraped game documentation
+
+Game docs are saved to disk at `<game_data>/docs/` and persist across sessions.
+The `docs/` prefix is automatically stripped from paths to avoid double-nesting,
+so `"docs/home.md"` and `"home.md"` both resolve to `<game_data>/docs/home.md`.
+
+---
+
+### `capture_upgrade_docs()`
+**The primary tool for capturing upgrade documentation.**
+
+Reads every open DocsWindow from the game, saves each doc to disk, then
+closes all the windows. Call this immediately after `live_buy_upgrade()` —
+the game opens a DocsWindow automatically when an upgrade is purchased.
+
+**Returns:**
+```json
+{
+  "captured": [
+    { "doc": "unlocks/loops", "window": "docs0", "saved": true }
+  ],
+  "message": "Captured and saved 1/1 docs"
+}
+```
+
+---
+
+### `save_game_doc(doc_path, content)`
+Saves arbitrary doc content to disk. Use when you have fetched content via
+`live_fetch_doc()` and want to persist it for later reference.
+
+**Args:**
+- `doc_path` — game doc path (e.g. `"unlocks/loops"` or `"docs/home.md"`).
+- `content` — markdown content to write.
+
+**Returns:** `str` — confirmation with file path.
+
+---
+
+### `read_game_doc(doc_path)`
+Reads a previously saved doc from disk. Raises if the file does not exist.
+
+**Args:**
+- `doc_path` — same format as `save_game_doc()`.
+
+**Returns:** `str` — markdown content.
+
+---
+
+### `list_game_docs()`
+Lists all saved game docs.
+
+**Returns:** `list[str]` — paths relative to the `docs/` folder,
+e.g. `["home.md", "unlocks/loops.md", "unlocks/variables.md"]`.
+
+---
+
+## Persistent notes & goals (per save slot)
+
+Notes and goals are stored in the save slot directory alongside scripts:
+- `<saves>/<SaveN>/notes.md` — free-form observations and discoveries
+- `<saves>/<SaveN>/goals.md` — current goals and progress tracking
+
+Both tools read/write the full file content on each call.
+
+---
+
+### `read_notes(save_name="Save0")`
+Read persistent notes for a save slot.
+
+**Returns:** `str` — markdown content, or empty string if none exist yet.
+
+---
+
+### `save_notes(content, save_name="Save0")`
+Overwrite persistent notes for a save slot. Call this to record observations,
+farming strategies, item unlock costs, or anything worth remembering.
+
+**Args:**
+- `content` — full markdown content.
+- `save_name` — save slot (default: `Save0`).
+
+**Returns:** `str` — confirmation.
+
+---
+
+### `read_goals(save_name="Save0")`
+Read the current goals and progress for a save slot.
+
+**Returns:** `str` — markdown content, or empty string if none exist yet.
+
+---
+
+### `save_goals(content, save_name="Save0")`
+Overwrite goals and progress for a save slot. Update this whenever goals
+change or milestones are reached.
+
+**Args:**
+- `content` — full markdown content.
+- `save_name` — save slot (default: `Save0`).
+
+**Returns:** `str` — confirmation.
+
+---
+
 ## Mod HTTP endpoints (Plugin.cs)
 
 The MCPBridge mod exposes these routes on `localhost:7070`.
@@ -482,6 +643,9 @@ The Python MCP server calls them internally; you should not need to call them di
 | GET | `/api/grid` | Full farm grid: every cell's entity, ground, water; drone positions |
 | GET | `/api/shop` | All purchasable upgrades with costs and affordability |
 | POST | `/api/buy` | Purchase an upgrade `{"unlock": "loops"}` |
+| GET | `/api/docs` | All open DocsWindows with window name, doc path, and markdown content |
+| POST | `/api/docs/close` | Close a DocsWindow by name `{"window": "docs0"}` |
+| GET | `/api/docs/fetch` | Fetch any doc's text without opening a UI window `?path=docs/home.md` |
 
 All responses are JSON. Error responses have `{"ok": false, "error": "..."}`.
 Success responses have `{"ok": true, "message": "..."}` or the relevant data object.
@@ -493,11 +657,17 @@ Success responses have `{"ok": true, "message": "..."}` or the relevant data obj
 | Situation | Use |
 |-----------|-----|
 | First thing in a session | `live_snapshot()` → `live_farm_grid()` → `live_shop()` |
+| Check persistent goals/notes | `read_goals()` → `read_notes()` |
 | Need to know what functions exist | `get_builtins_reference()` |
 | Write + run + get results | `live_write_run_wait()` |
 | Script already written, just run it | `live_run_and_wait()` |
 | Check if I can buy something | `live_shop()` |
-| Purchase an upgrade | `live_buy_upgrade(name)` |
+| Purchase an upgrade | `live_buy_upgrade(name)` → `capture_upgrade_docs()` |
+| Save upgrade doc after buying | `capture_upgrade_docs()` |
+| Scrape a doc page on demand | `live_fetch_doc(path)` → `save_game_doc(path, content)` |
+| Read a previously saved doc | `read_game_doc(path)` or `list_game_docs()` |
+| Record an observation or insight | `save_notes(updated_content)` |
+| Update goals / mark progress | `save_goals(updated_content)` |
 | See what's on the farm | `live_farm_grid()` |
 | Mod not running / early setup | `write_script()` + `read_game_state()` |
 | Check if a script is still running | `live_status()` |

@@ -11,7 +11,6 @@ pip install "mcp[cli]"
 
 ### 2. Add MCP
 
-
 ```json
 {
   "mcpServers": {

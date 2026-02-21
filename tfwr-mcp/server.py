@@ -15,6 +15,7 @@ Two integration layers:
 import json
 import os
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -75,6 +76,7 @@ DEFAULT_GAME_DATA = _local_app_data.parent / "LocalLow" / "TheFarmerWasReplaced"
 
 GAME_DATA_PATH = Path(os.environ.get("TFWR_DATA_PATH", str(DEFAULT_GAME_DATA)))
 SAVES_PATH = GAME_DATA_PATH / "Saves"
+DOCS_PATH  = GAME_DATA_PATH / "docs"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MCP server
@@ -158,6 +160,20 @@ def _parse_items(serialize_list: list) -> dict[str, float]:
     except StopIteration:
         pass
     return items
+
+
+def _doc_file_path(doc_path: str) -> Path:
+    """Convert a game doc path to a local path under DOCS_PATH.
+
+    Strips a leading 'docs/' prefix to avoid double-nesting, and ensures
+    the path ends with '.md'.
+    """
+    clean = doc_path
+    if clean.startswith("docs/"):
+        clean = clean[5:]
+    if not clean.endswith(".md"):
+        clean += ".md"
+    return DOCS_PATH / clean
 
 
 def _wait_for_done(timeout_sec: float) -> tuple[bool, float]:
@@ -618,6 +634,231 @@ def live_buy_upgrade(unlock_name: str) -> dict:
     Returns: {"ok": true/false, "message"/"error": str}
     """
     return _mod_post("/api/buy", {"unlock": unlock_name})
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Live tools — docs (require MCPBridge mod + game running)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def live_get_open_docs() -> dict:
+    """
+    List all currently open DocsWindow instances in the game (requires MCPBridge mod).
+
+    Returns a list of open docs windows, each with:
+      - window:  the window name (e.g. "docs0") — pass to live_close_docs_window()
+      - doc:     the doc path that is loaded (e.g. "unlocks/loops" or "docs/home.md")
+      - content: the full rendered markdown text shown in the window
+    """
+    return _mod_get("/api/docs")
+
+
+@mcp.tool()
+def live_close_docs_window(window_name: str) -> dict:
+    """
+    Close a DocsWindow in the game by name (requires MCPBridge mod).
+
+    Args:
+        window_name: Window name from live_get_open_docs() (e.g. "docs0").
+
+    Returns: {"ok": true/false, "message"/"error": str}
+    """
+    return _mod_post("/api/docs/close", {"window": window_name})
+
+
+@mcp.tool()
+def live_fetch_doc(doc_path: str) -> dict:
+    """
+    Fetch the text content of any game doc page without opening a UI window
+    (requires MCPBridge mod).
+
+    Supported path formats:
+      - "docs/home.md"          — file-based markdown doc
+      - "unlocks/loops"         — unlock tooltip text
+      - "functions/harvest"     — function reference tooltip
+      - "items/Hay"             — item tooltip
+      - "objects/Wheat"         — farm object tooltip
+
+    Args:
+        doc_path: Game doc path to fetch.
+
+    Returns: {"path": str, "content": str}
+    """
+    encoded = urllib.parse.quote(doc_path, safe="")
+    return _mod_get(f"/api/docs/fetch?path={encoded}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Persistent docs — save scraped game documentation to disk
+# ──────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def save_game_doc(doc_path: str, content: str) -> str:
+    """
+    Save scraped game documentation to disk under the shared docs/ folder.
+
+    The file is stored at:
+        <game_data>/docs/<doc_path>.md
+    with any leading 'docs/' prefix stripped to avoid double-nesting.
+
+    Args:
+        doc_path: Game doc path (e.g. "unlocks/loops" or "docs/home.md").
+        content:  Markdown content to write.
+    """
+    path = _doc_file_path(doc_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return f"Saved doc to '{path}'"
+
+
+@mcp.tool()
+def read_game_doc(doc_path: str) -> str:
+    """
+    Read a previously saved game doc from disk.
+
+    Args:
+        doc_path: Game doc path (e.g. "unlocks/loops" or "docs/home.md").
+    """
+    path = _doc_file_path(doc_path)
+    if not path.exists():
+        raise ValueError(f"Doc '{doc_path}' not found at {path}. Fetch it first with live_fetch_doc().")
+    return path.read_text(encoding="utf-8")
+
+
+@mcp.tool()
+def list_game_docs() -> list[str]:
+    """
+    List all game documentation files saved to disk.
+
+    Returns paths relative to the docs/ folder (e.g. ["home.md", "unlocks/loops.md"]).
+    """
+    if not DOCS_PATH.exists():
+        return []
+    return sorted(str(p.relative_to(DOCS_PATH)) for p in DOCS_PATH.rglob("*.md"))
+
+
+@mcp.tool()
+def capture_upgrade_docs() -> dict:
+    """
+    Read every open DocsWindow from the game, save each doc to disk, then
+    close the windows (requires MCPBridge mod).
+
+    Call this immediately after purchasing an upgrade — the game opens a
+    DocsWindow automatically, and this tool captures and stores its content.
+
+    Returns:
+      - captured: list of {"doc": path, "window": name, "saved": bool}
+      - message:  summary string
+    """
+    result = _mod_get("/api/docs")
+    docs = result.get("docs", [])
+    if not docs:
+        return {"captured": [], "message": "No docs windows open"}
+
+    captured = []
+    for doc in docs:
+        window_name = doc.get("window", "")
+        doc_path    = doc.get("doc", "")
+        content     = doc.get("content", "")
+
+        entry: dict = {"doc": doc_path, "window": window_name}
+        if doc_path and content:
+            try:
+                save_game_doc(doc_path, content)
+                entry["saved"] = True
+            except Exception as e:
+                entry["saved"] = False
+                entry["error"] = str(e)
+        else:
+            entry["saved"] = False
+            entry["error"] = "empty doc path or content"
+
+        captured.append(entry)
+
+        if window_name:
+            try:
+                _mod_post("/api/docs/close", {"window": window_name})
+            except Exception:
+                pass
+
+    saved_count = sum(1 for e in captured if e.get("saved"))
+    return {
+        "captured": captured,
+        "message": f"Captured and saved {saved_count}/{len(captured)} docs",
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Persistent notes & goals (per save slot)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def read_notes(save_name: str = "Save0") -> str:
+    """
+    Read persistent notes for a save slot.
+
+    Notes are free-form markdown where the model records observations,
+    discoveries, and lessons learned during play.
+
+    Args:
+        save_name: Save slot (default: Save0).
+
+    Returns: note contents, or empty string if none exist yet.
+    """
+    _validate_save(save_name)
+    path = _save_dir(save_name) / "notes.md"
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+@mcp.tool()
+def save_notes(content: str, save_name: str = "Save0") -> str:
+    """
+    Overwrite persistent notes for a save slot.
+
+    Args:
+        content:   Full markdown content to save.
+        save_name: Save slot (default: Save0).
+    """
+    _validate_save(save_name)
+    path = _save_dir(save_name) / "notes.md"
+    path.write_text(content, encoding="utf-8")
+    return f"Saved notes ({len(content)} chars) to '{path}'"
+
+
+@mcp.tool()
+def read_goals(save_name: str = "Save0") -> str:
+    """
+    Read persistent goals and progress for a save slot.
+
+    Goals track what the model is working toward and how far along it is.
+
+    Args:
+        save_name: Save slot (default: Save0).
+
+    Returns: goals/progress content, or empty string if none exist yet.
+    """
+    _validate_save(save_name)
+    path = _save_dir(save_name) / "goals.md"
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+@mcp.tool()
+def save_goals(content: str, save_name: str = "Save0") -> str:
+    """
+    Overwrite goals and progress for a save slot.
+
+    Args:
+        content:   Full markdown content describing current goals and progress.
+        save_name: Save slot (default: Save0).
+    """
+    _validate_save(save_name)
+    path = _save_dir(save_name) / "goals.md"
+    path.write_text(content, encoding="utf-8")
+    return f"Saved goals ({len(content)} chars) to '{path}'"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
