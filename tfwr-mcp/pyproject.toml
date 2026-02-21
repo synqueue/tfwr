@@ -1,0 +1,18 @@
+[project]
+name = "tfwr-mcp"
+version = "0.1.0"
+description = "MCP server for 'The Farmer Was Replaced'"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+tfwr-mcp = "server:mcp"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]

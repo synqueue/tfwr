@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>MCPBridge</AssemblyName>
+    <RootNamespace>TFWRMCPBridge</RootNamespace>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Override on command line: dotnet build /p:GameDir="D:\Steam\..." -->
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\The Farmer Was Replaced</GameDir>
+    <!-- Build directly into BepInEx plugins folder -->
+    <OutputPath>$(GameDir)\BepInEx\plugins</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- Suppress deps.json generation -->
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- BepInEx core -->
+    <Reference Include="BepInEx">
+      <HintPath>$(GameDir)\BepInEx\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(GameDir)\BepInEx\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Unity engine -->
+    <Reference Include="UnityEngine">
+      <HintPath>$(GameDir)\TheFarmerWasReplaced_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(GameDir)\TheFarmerWasReplaced_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Game assemblies -->
+    <Reference Include="Core">
+      <HintPath>$(GameDir)\TheFarmerWasReplaced_Data\Managed\Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Utils">
+      <HintPath>$(GameDir)\TheFarmerWasReplaced_Data\Managed\Utils.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>
